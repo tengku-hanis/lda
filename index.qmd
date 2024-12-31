@@ -1,0 +1,242 @@
+---
+title: "Longitudinal data analysis: Hands-on in R"
+author: "Tengku Muhammad Hanis Bin Tengku Mokhtar, PhD"
+format: 
+  html:
+    toc: true
+    toc-location: left
+    theme: united
+editor: visual
+---
+
+## Data
+
+This practice will utilise a logitudinal clinical study data. The data consist of 60 subjects, 30 subjects were given drug A and another 30 subjects were given drug B. Each subjects were followed up for 6 weeks. The score measurements were taken each week.
+
+The code below is used to create the data.
+
+```{r}
+# For reproducibility
+set.seed(123)  
+
+# Number of subjects and time intervals
+n_subjects <- 60
+n_drug_A <- n_subjects / 2
+n_drug_B <- n_subjects / 2
+n_time_intervals <- 6
+
+# Generate the data
+id <- rep(1:n_subjects, each = n_time_intervals)
+drug <- rep(c(rep("A", n_time_intervals * n_drug_A), rep("B", n_time_intervals * n_drug_B)))
+time <- rep(1:n_time_intervals, times = n_subjects)
+
+# Define mean pulse scores for each group and time to create significant differences
+# Time effect: increasing pulse over time
+base_pulse_A <- seq(60, 70, length.out = n_time_intervals)
+base_pulse_B <- seq(70, 80, length.out = n_time_intervals)
+
+# Generate pulse scores with some random noise
+score <- c(
+  rep(base_pulse_A, times = n_drug_A) + rnorm(n_drug_A * n_time_intervals, mean = 0, sd = 2),
+  rep(base_pulse_B, times = n_drug_B) + rnorm(n_drug_B * n_time_intervals, mean = 0, sd = 2)
+)
+
+# Create the data frame
+df <- data.frame(id = factor(id), drug = factor(drug), week = factor(time), score = score)
+```
+
+## Packages
+
+The packages below should be loaded.
+
+```{r warning=FALSE, message=FALSE}
+library(afex)
+library(nlme)
+library(emmeans)
+library(tidyverse)
+```
+
+## Explore the data
+
+First, we plot the boxplot.
+
+```{r}
+df %>% 
+  ggplot(aes(x = week, y = score, fill = drug)) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+## Multilevel model
+
+### Develop the models
+
+To run multilevel model, we need to create:
+
+1.  Base or null model.
+2.  Model with time variable (week).
+3.  Model with time and group variable (week and drug).
+4.  Model with time, group, and interaction between both both variables (week, group and week x group).
+
+```{r}
+# Base/null model
+base <- lme(score ~ 1, random = ~1 | id/week, data = df, method = "ML")
+
+# Add time variable - week
+mod_week <- update(base, .~. + week) 
+
+# Add group variable - drug
+mod_week_drug <- update(mod_week, .~. + drug)
+
+# Add interaction - group effect regardless of time
+mod_int <- update(mod_week_drug, .~. + drug:week)
+```
+
+### Model comparison
+
+Once we have all four models, we can do model comparison using AIC, BIC and likelihood ratio (LR) test.
+
+```{r}
+anova(base, mod_week, mod_week_drug, mod_int, type = "LR")
+```
+
+`mod_week_drug` has the lowest AIC and BIC. Also, LR test is not significant for the interaction. Thus, the best model is `mod_week_drug`.
+
+### Assumption
+
+For multilevel model, the only assumption is the normality of the residual.
+
+```{r}
+# Shapiro-wilk
+shapiro.test(mod_week_drug$residuals)
+
+# Kolmogorov-smirnov
+DescTools::LillieTest(mod_week_drug$residuals) 
+```
+
+Both normality tests are significant (p \< 0.05).
+
+```{r}
+niceFunction::histWithCurve(mod_week_drug$residuals)  
+```
+
+However, using histogram we can see that the data seems to be quite normal-ish.
+
+### Interpret
+
+Lastly, we can interpret the final model.
+
+```{r}
+parameters::model_parameters(mod_week_drug)
+```
+
+We can see that drug B has a significant higher score than drug A (p \< 0.001). Also, each week comparison to week 1, all are significant (p \< 0.001).
+
+Additionally, we can plot the marginal means.
+
+```{r}
+modelbased::estimate_means(mod_week_drug) %>%
+  plot(show_data = "violin") +
+  theme_bw()
+```
+
+## Repeated measure ANOVA
+
+### Run repeated measure ANOVA
+
+We can run repeated measure (RM) ANOVA using the following codes.
+
+```{r message=FALSE, warning=FALSE}
+mod <- aov_ez(id = "id", 
+              dv = "score",
+              between = "drug",
+              within = "week",
+              data = df)
+```
+
+Before we check the result, we need to check the assumptions.
+
+### Assumptions
+
+RM ANOVA has 3 assumptions:
+
+1.  Normality of residuals.
+2.  Equal variance.
+3.  Sphericity.
+
+Before we test the assumptions, we need to get the predicted and residual values.
+
+```{r}
+dat <- 
+  data.frame(
+    res = resid(mod),
+    pred = predict(mod)
+  )
+```
+
+1.  Normality test
+
+```{r}
+# Shapiro-wilk
+shapiro.test(dat$res)
+
+# Kolmogorov-smirnov
+DescTools::LillieTest(dat$res) 
+
+# Histogram
+niceFunction::histWithCurve(dat$res)
+```
+
+The residuals are normally distributed.
+
+2.  Equal variance.
+
+```{r}
+# Levene test
+car::leveneTest(score ~ drug, data = df)
+
+# Residual vs predicted values
+dat %>% 
+  ggplot(aes(x = pred, y = res)) +
+  geom_point()
+
+```
+
+Equal variance assumption is met.
+
+3.  Sphericity.
+
+Sphericity assumption reflects equality of variances of the differences between all possible pairs of within-subject conditions. If this assumption is not met:
+
+-   Mauchly's W \>0.75, take Huynh-Feldt correction.
+-   Mauchly's W ≤0.75, take Greenhouse-Geisser correction.
+
+```{r}
+
+# 3) Mauchly's test (sphericity assumption)
+summary(mod)$sphericity.tests
+```
+
+In our case, the sphericity assumption is met.
+
+### Interpret
+
+Next, we can interpret the result.
+
+```{r}
+summary(mod)
+```
+
+We can see that there is a significant difference of the score between the drug and week. However, the interaction between both variables is not significant.
+
+### Post hoc tests
+
+Since both variable drug and week is significant, we need to do a post hoc tests.
+
+```{r}
+# For drug
+emmeans(mod, pairwise ~ drug)
+
+# For week
+emmeans(mod, pairwise ~ week, adjust = "bonferroni")
+```
